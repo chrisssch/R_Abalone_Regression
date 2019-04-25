@@ -1,0 +1,347 @@
+---
+title: "R - Abalone - Regression Methods, Regularization, and PCA"
+author: "Christoph Schauer"
+date: "22 July 2018"
+output: html_document
+---
+
+## Introduction
+
+This notebook is for practicing machine learning with different parametric regression and regularization methods -- linear and polynomial regression, ridge regression, lasso, and stepwise model selection -- with the caret and glmnet packages as well as preprocessing data with PCA. 
+
+The data used is the Abalone data set from the [UCI Machine Learning Repository](
+http://archive.ics.uci.edu/ml/datasets/Abalone). This data set contains 4177 observations of 9 physical attributes -- sex, length, diameter, height, whole weight, shucked weight, viscera weight, shell weight, and rings -- of abalone snails. The number of rings in the shell plus 1.5 gives the age of a snail in years. The goal is to predict the age from all other attributes. From the description of the data set:
+
+*The age of abalone is determined by cutting the shell through the cone, staining it, and counting the number of rings through a microscope -- a boring and time-consuming task. Other measurements, which are easier to obtain, are used to predict the age.*
+
+As it turned out, this dataset is actually a poor choice for showcasing regularization methods, as the structure of the data is such that these models don't offer any real advantage in terms of prediction accuracy. And due to all features being highly correlated, two principal components already capture more than 95% of the variance. It's still fine practing coding though.
+
+
+## Setup
+
+#### Load required packages
+```{r, message = FALSE}
+library(tidyverse)
+library(gridExtra)
+library(caret)
+library(glmnet)
+library(leaps)
+library(knitr)
+```
+
+#### Load and prepare data
+```{r, message = FALSE}
+abalone = read_csv("abalone_data.txt", col_names = FALSE)
+colnames(abalone) = c("sex", "length", "diameter", "height", "weight_whole", 
+                      "weight_shucked", "weight_viscera", "weight_shell", "rings")
+abalone$sex = as.factor(abalone$sex)
+```
+
+#### Partition data into training and test set
+```{r}
+set.seed(123)
+in_train = createDataPartition(y = abalone$rings, p = 0.75, list = FALSE)
+abalone_train = abalone[in_train,]
+abalone_test = abalone[-in_train,]
+nrow(abalone_train)
+nrow(abalone_test)
+```
+
+25% of the data is assigned to the test set.
+
+## Exploratory analysis
+
+#### Summary statistics
+```{r}
+abalone_train
+summary(abalone_train)
+```
+
+#### Distribution of rings (i.e. age)
+```{r}
+ggplot(abalone_train) + geom_bar(aes(x = rings), fill = "deepskyblue3")
+```
+
+#### Scatterplots of selected predictors
+```{r}
+grid.arrange(
+     ggplot(abalone_train) + geom_point(aes(x = length, y = rings), color = "deepskyblue3", alpha = 0.2),
+     ggplot(abalone_train) + geom_point(aes(x = height, y = rings), color = "deepskyblue3", alpha = 0.2),
+     ggplot(abalone_train) + geom_point(aes(x = weight_whole, y = rings), color = "deepskyblue3", alpha = 0.2),
+     ggplot(abalone_train) + geom_point(aes(x = weight_shell, y = rings), color = "deepskyblue3", alpha = 0.2),
+     ggplot(abalone_train) + geom_point(aes(x = sqrt(weight_whole), y = rings), color = "deepskyblue3", 
+                                        alpha = 0.2),
+     ggplot(abalone_train) + geom_point(aes(x = sqrt(weight_shell), y = rings), color = "deepskyblue3", 
+                                        alpha = 0.2),
+     ncol = 2, top = "scatterplots of selected predictors and rings"
+)
+```
+
+The relationship between rings and length, and height is pretty linear. After taking the square root of the weight variables, their relationship with rings looks relatively linear as well. Linear regression models are therefore good candidates for prediction.
+
+I will estimate linear models with regular weight variables as well as their square roots to compare the accuracy of both models, but use only non-squared variables in all subsequent models for the sake of simplicity.
+
+The variance of all predictors seems to increase with age, naturally, therefore heteroskedasticity could be an issue for estimating the statistical significance and such. This could be addressed e.g. by preprocessing the data with a Box-Cox transformation. I've already had to deal with heteroskedasticity in my econometrics classes many times, so I'll ignore that here for now. It doesn't matter for prediction accuracy anyway.
+
+#### Correlation and covariance
+```{r}
+kable(cor(abalone_train[,2:8]), caption = "correlation table")
+kable(cov(abalone_train[,2:8]), caption = "covariance table")
+```
+
+All predictors are quite highly correlated. Excluding some of these predictors might therefore lead to only minimal loss in prediction accuracy. I will estimate some sparse models with lasso, stepwise model selection, and prinicipal component analysis.
+
+## Linear and polynomial regression models - with caret
+
+#### Linear regression
+```{r}
+lm1 = train(rings ~ ., data = abalone_train, method = "lm")
+summary(lm1)
+rings_pred_lm1 = predict(lm1, newdata = abalone_test)
+sqrt(mean((rings_pred_lm1 - abalone_test$rings)^2)) 
+```
+
+#### Residual analysis of the linear model
+```{r}
+par(mfrow = c(2,2))
+plot(lm(rings ~ ., data = abalone_train))
+```
+
+#### Linear regression with square root of weight variables
+```{r}
+lm2 = train(rings ~ sex + length + diameter + height + sqrt(weight_whole) + sqrt(weight_shucked) +
+                 sqrt(weight_viscera) + sqrt(weight_shell), data = abalone_train, method = "lm")
+rings_pred_lm2 = predict(lm2, newdata = abalone_test)
+sqrt(mean((rings_pred_lm2 - abalone_test$rings)^2)) # RMSE
+mean(abs(rings_pred_lm2 - abalone_test$rings)) # ME
+
+```
+
+This model is more accurate than the standard linear model. On average, this model errs by about 1.6 years when predicting the age of abalone.
+
+#### Polynomial regression
+```{r}
+lm3 = train(rings ~ sex + poly(length, 3) + poly(diameter, 3) + poly(height, 3) + 
+                  poly(weight_whole, 3) + poly(weight_viscera, 3) + poly(weight_shell, 3) + 
+                  poly(diameter, 3), data = abalone_train, method = "lm")
+rings_pred_lm3 = predict(lm3, newdata = abalone_test)
+sqrt(mean((rings_pred_lm3 - abalone_test$rings)^2))
+```
+
+The model with polynomials is less accurate.
+
+## Regularized regression - with caret
+
+#### Ridge regression (elasticnet implementation)
+```{r}
+ridge1 = train(rings ~ ., data = abalone_train, method = "ridge", preProcess = c("center", "scale"))
+ridge1
+rings_pred_ridge1 = predict(ridge1, newdata = abalone_test)
+sqrt(mean((rings_pred_ridge1 - abalone_test$rings)^2))
+```
+Variables are standardized. The optimal lambda is chosen automatically by bootstrapping. Lambda is basically zero, i.e. the model is identical to the linear regression model.
+
+#### Regression with lasso (elasticnet implementation)
+```{r}
+lasso1 = train(rings ~ ., data = abalone_train, method = "lasso", preProcess = c("center", "scale"))
+lasso1
+rings_pred_lasso1 = predict(lasso1, newdata = abalone_test)
+sqrt(mean((rings_pred_lasso1 - abalone_test$rings)^2))
+```
+The optimal lambda chosen by the algorithm is small and only one predictor was excluded: length. length was already statistically insignificant in the linear model. The prediction is a tiny bit more accurate than the linear model.
+
+## Ridge regression, lasso, and elastic net - caret with glmnet implementation
+
+For estimating ridge regression and lasso with the glmnet implementation in caret, a vector of lambdas needs to be passed to the algorithm as well.
+```{r}
+lambdas = (seq(0, 5, length = 100))^2
+```
+
+##### Ridge regression
+```{r}
+ridge2 <- train(rings ~ ., data = abalone_train, method = "glmnet", preProcess = c("center", "scale"),
+                tuneGrid = expand.grid(alpha = 0, lambda = lambdas))
+rings_pred_ridge2 <- predict(ridge2, newdata = abalone_test)
+sqrt(mean((rings_pred_ridge2 - abalone_test$rings)^2))
+```
+
+#### Regression with lasso
+```{r}
+lasso2 <- train(rings ~ ., data = abalone_train, method = "glmnet", preProcess = c("center", "scale"),
+                tuneGrid = expand.grid(alpha = 1, lambda = lambdas))
+rings_pred_lasso2 <- predict(lasso2, newdata = abalone_test)
+sqrt(mean((rings_pred_lasso2 - abalone_test$rings)^2))
+```
+
+#### Regression with elastic net: Combination of ridge regression and lasso
+```{r}
+elnet1 <- train(rings ~ ., data = abalone_train, method = "glmnet", preProcess = c("center", "scale"))
+elnet1
+rings_pred_elnet1 = predict(elnet1, newdata = abalone_test)
+sqrt(mean((rings_pred_elnet1 - abalone_test$rings)^2))
+```
+
+```{r}
+plot(elnet1)
+```
+
+In all models, lambda is set to a very low value: Regularization does not offer much of a benefit.
+
+## Regularized regressions with the glmnet package
+
+Caret is great, but when I learned ridge and lasso regression, I had an easier time understanding using a "base" package, glmnet in this case, as it provides easier access to what's going on under the hood.
+
+#### Convert factor variable sex to dummy variables and standardize predictor variables
+```{r}
+dummy_train = dummyVars(" ~ .", data = abalone_train)
+abalone_train2 = as_tibble(predict(dummy_train, newdata = abalone_train))
+dummy_test = dummyVars(" ~ .", data = abalone_test)
+abalone_test2 = as_tibble(predict(dummy_test, newdata = abalone_test))
+
+x = preProcess(abalone_train2[,4:10], method = c("center", "scale"))
+abalone_train2 = predict(x, abalone_train2)
+abalone_test2 = predict(x, abalone_test2)
+```
+
+#### Ridge regression
+```{r}
+set.seed(123)
+ridge3 = glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 0, nlambda = 100)
+cv_ridge3 = cv.glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 0, nfolds = 10)
+rings_pred_ridge3 <- predict(ridge3, s = cv_ridge3$lambda.min, newx = as.matrix(abalone_test2[,1:10]))
+RMSE_ridge3 = sqrt(mean((rings_pred_ridge3 - abalone_test2$rings)^2))
+cv_ridge3$lambda.min
+RMSE_ridge3
+```
+
+```{r}
+plot(cv_ridge3)
+```
+
+#### Regression with lasso
+```{r}
+set.seed(123)
+lasso3 = glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, nlambda = 100)
+cv_lasso3 = cv.glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, nfolds = 10)
+rings_pred_lasso3 <- predict(lasso3, s = cv_lasso3$lambda.min, newx = as.matrix(abalone_test2[,1:10]))
+RMSE_lasso3 = sqrt(mean((rings_pred_lasso3 - abalone_test2$rings)^2))
+coef(cv_lasso3, s = cv_lasso3$lambda.min)
+cv_lasso3$lambda.min
+RMSE_lasso3
+```
+
+```{r}
+plot(cv_lasso3)
+```
+
+#### Testing higher lambdas
+```{r}
+set.seed(123)
+coef(glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, lambda = 0.1))
+coef(glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, lambda = 0.5))
+coef(glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, lambda = 1.0))
+coef(glmnet(as.matrix(abalone_train2[,1:10]), abalone_train2$rings, alpha = 1, lambda = 2.0))
+```
+As expected, increasing lambda decreases the number of variables included in the model.
+
+## Stepwise model selection - with caret (leaps implementation)
+
+#### Stepwise selection
+```{r}
+step1 = train(rings ~ ., data = abalone_train, method = "leapSeq")
+step1
+summary(step1)
+rings_pred_step1 = predict(step1, newdata = abalone_test)
+sqrt(mean((rings_pred_step1 - abalone_test$rings)^2))
+```
+With stepwise selection and default settings, caret chooses a model with only 3 predictors (height, shucked weight, and shell weight) as minimizing the root mean squared error by bootstrapping. In this sparser model, the RMSE on the test set is only slightly higher than in the full linear model.
+
+Showing which predictors get selected for each number of predictors included:
+```{r}
+step3 = train(rings ~ ., data = abalone_train, method = "leapSeq",
+            tuneGrid = expand.grid(nvmax = 9))
+summary(step3)
+```
+
+#### Backward selection
+```{r}
+back1 = train(rings ~ ., data = abalone_train, method = "leapBackward")
+back1
+summary(back1)
+rings_pred_back1 = predict(back1, newdata = abalone_test)
+sqrt(mean((rings_pred_back1 - abalone_test$rings)^2))
+```
+
+#### Forward selection
+```{r}
+for1 = train(rings ~ ., data = abalone_train, method = "leapForward")
+for1
+summary(for1)
+rings_pred_for1 = predict(for1, newdata = abalone_test)
+sqrt(mean((rings_pred_for1 - abalone_test$rings)^2))
+```
+
+## Stepwise model selection - with leaps package, without caret
+```{r}
+step2 = regsubsets(rings ~ ., data = abalone_train, nvmax = 9)
+summary(step2)
+names(summary(step2))
+summary(step2)$rss
+summary(step2)$rsq
+summary(step2)$adjr2
+```
+
+```{r}
+plot(summary(step2)$rsq)
+plot(summary(step2)$rss)
+plot(summary(step2)$adjr2)
+```
+
+Prediction accuracy doesn't decrease much after adding more than 3 predictors to the model.
+
+#### Backward and forward selection
+```{r}
+back2 = regsubsets(rings ~ ., data = abalone_train, nvmax = 20, method = "backward")
+for2 = regsubsets(rings ~ ., data = abalone_train, nvmax = 20, method = "forward")
+summary(back2)
+summary(for2)
+```
+
+## Principal Component Analysis - with caret
+
+#### Correlation table of all numeric predictors
+```{r}
+kable(cor(abalone_train[,2:8]), caption = "correlation table of all numeric predictors")
+```
+
+#### Prediction with PCA preprocessing
+```{r}
+pca_object = preProcess(abalone_train[, 2:8], method = "pca")
+pca_object
+pca_train = predict(pca_object, abalone_train[, 2:8])
+pca_train = cbind(pca_train, rings = abalone_train$rings)
+pca1 = train(rings ~ PC1 + PC2, method = "glm", data = pca_train)
+pca1
+pca_test = predict(pca_object, abalone_test[, 2:8])
+pca_test = cbind(pca_test, rings = abalone_test$rings)
+rings_pred_pca1 = predict(pca1, newdata = pca_test)
+sqrt(mean((rings_pred_pca1 - abalone_test$rings)^2))
+```
+
+Caret's PCA preprocessing function automatically calculates the number of prinicipal components needed to capture (by default) 95% of the variance of all variables that are passed to the function. In this example, this is 2 components. The RMSE of predicted vs actual rings in the test set is about 0.5 higher than of the models with all predictors
+
+## Predicting the number of rings with a non-parametric model for comparison: KNN
+
+```{r}
+knn1 = train(rings ~ ., data = abalone_train, method = "knn")
+knn1
+rings_pred_knn1 = predict(knn1, newdata = abalone_test)
+sqrt(mean((rings_pred_knn1 - abalone_test$rings)^2))
+
+knn2 = train(rings ~ ., data = abalone_train, method = "knn", preProcess = c("center","scale"))
+rings_pred_knn2 = predict(knn2, newdata = abalone_test)
+sqrt(mean((rings_pred_knn2 - abalone_test$rings)^2))
+```
+
+Letting caret select the optimal number of nearest neighbors, prediction accuracy on the test set is about as high as in the parametric model. 
+
