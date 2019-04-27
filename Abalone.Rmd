@@ -14,7 +14,7 @@ http://archive.ics.uci.edu/ml/datasets/Abalone). This data set contains 4177 obs
 
 *The age of abalone is determined by cutting the shell through the cone, staining it, and counting the number of rings through a microscope -- a boring and time-consuming task. Other measurements, which are easier to obtain, are used to predict the age.*
 
-As it turned out, this dataset is actually a poor choice for showcasing regularization methods, as the structure of the data is such that these models don't offer any real advantage in terms of prediction accuracy. And due to all features being highly correlated, two principal components already capture more than 95% of the variance. It's still fine practing coding though.
+As it turned out, this dataset is actually a poor choice for showcasing regularization methods, as the structure of the data is such that these models don't offer any real advantage in terms of prediction accuracy. And due to all features being highly correlated, two principal components already capture more than 95% of the variance. It's still fine practicing coding though.
 
 
 ## Setup
